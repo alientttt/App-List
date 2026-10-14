@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, type FormEvent } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
   signInAnonymously,
-  signInWithCustomToken,
   onAuthStateChanged,
+  type User,
 } from "firebase/auth";
 import {
   getFirestore,
@@ -14,6 +14,9 @@ import {
   doc,
   onSnapshot,
   serverTimestamp,
+  type Firestore,
+  type CollectionReference,
+  type DocumentData,
 } from "firebase/firestore";
 import {
   Edit2,
@@ -26,11 +29,28 @@ import {
   Download,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
-import { id } from "date-fns/locale";
+import { id as idLocale } from "date-fns/locale";
 
-// Import library PDF
+// Library PDF
 import jsPDF from "jspdf";
-import "jspdf-autotable";
+import autoTable from "jspdf-autotable";
+
+// --- TypeScript Interfaces ---
+interface TugasAkhirItem {
+  id: string;
+  nama: string;
+  npm: string;
+  judul: string;
+  userId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface EditFormState {
+  judul: string;
+  npm: string;
+  nama: string;
+}
 
 // --- Firebase Configuration & Initialization ---
 const firebaseConfig = {
@@ -45,12 +65,18 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId =
-  typeof __app_id !== "undefined" ? __app_id : "default-tugas-akhir-app";
+const appId = "default-tugas-akhir-app";
 
 // --- Vanilla JS OOP untuk Logika Data (Model) ---
 class TugasAkhirManager {
-  constructor(db, appId, collectionName = "tugas_akhir_list") {
+  db: Firestore;
+  collectionRef: CollectionReference<DocumentData>;
+
+  constructor(
+    db: Firestore,
+    appId: string,
+    collectionName = "tugas_akhir_list",
+  ) {
     this.db = db;
     this.collectionRef = collection(
       db,
@@ -62,7 +88,7 @@ class TugasAkhirManager {
     );
   }
 
-  async add(data, userId) {
+  async add(data: EditFormState, userId: string) {
     if (!userId) throw new Error("User must be logged in to add");
     return addDoc(this.collectionRef, {
       ...data,
@@ -72,7 +98,7 @@ class TugasAkhirManager {
     });
   }
 
-  async update(docId, data, userId) {
+  async update(docId: string, data: EditFormState, userId: string) {
     if (!userId) throw new Error("User must be logged in to update");
     const docRef = doc(this.collectionRef, docId);
     return updateDoc(docRef, {
@@ -86,76 +112,77 @@ const taManager = new TugasAkhirManager(db, appId);
 
 // --- React Components ---
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
+  const [loadingAuth, setLoadingAuth] = useState<boolean>(true);
 
   // Form State
-  const [nama, setNama] = useState("");
-  const [npm, setNpm] = useState("");
-  const [judul, setJudul] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [nama, setNama] = useState<string>("");
+  const [npm, setNpm] = useState<string>("");
+  const [judul, setJudul] = useState<string>("");
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // Data State
-  const [listTA, setListTA] = useState([]);
-  const [loadingData, setLoadingData] = useState(true);
-  const [errorMsg, setErrorMsg] = useState("");
+  const [listTA, setListTA] = useState<TugasAkhirItem[]>([]);
+  const [loadingData, setLoadingData] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
   // Filter/Sort State
-  const [filterType, setFilterType] = useState("recent"); // 'recent' or 'npm'
+  const [filterType, setFilterType] = useState<string>("recent");
 
   // Edit State
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ judul: "", npm: "", nama: "" });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<EditFormState>({
+    judul: "",
+    npm: "",
+    nama: "",
+  });
 
   // 1. Setup Auth
   useEffect(() => {
-    let unsubscribe;
     const initAuth = async () => {
       try {
-        if (
-          typeof __initial_auth_token !== "undefined" &&
-          __initial_auth_token
-        ) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
+        await signInAnonymously(auth);
       } catch (err) {
         console.error("Auth error:", err);
-        setErrorMsg("Gagal melakukan autentikasi. " + err.message);
+        setErrorMsg(
+          "Gagal melakukan autentikasi. " +
+            (err instanceof Error ? err.message : String(err)),
+        );
       }
     };
 
     initAuth();
 
-    unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setLoadingAuth(false);
     });
 
     return () => {
-      if (unsubscribe) unsubscribe();
+      unsubscribe();
     };
   }, []);
 
   // 2. Fetch Data
   useEffect(() => {
-    if (!user) {
-      setListTA([]);
-      setLoadingData(false);
-      return;
-    }
+    if (!user) return;
 
-    setLoadingData(true);
     const unsubscribe = onSnapshot(
       taManager.collectionRef,
       (snapshot) => {
-        const data = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-          createdAt: doc.data().createdAt?.toDate() || new Date(),
-          updatedAt: doc.data().updatedAt?.toDate() || new Date(),
-        }));
+        const data: TugasAkhirItem[] = snapshot.docs.map((d) => {
+          const raw = d.data({ serverTimestamps: "estimate" });
+          return {
+            id: d.id,
+            nama: raw.nama,
+            npm: raw.npm,
+            judul: raw.judul,
+            userId: raw.userId,
+            createdAt: raw.createdAt?.toDate() ?? new Date(),
+            updatedAt: raw.updatedAt?.toDate() ?? new Date(),
+          };
+        });
+
         setListTA(data);
         setLoadingData(false);
       },
@@ -170,81 +197,90 @@ export default function App() {
   }, [user]);
 
   // Sorting Logic
+  // Nilai turunan: tidak perlu state tambahan
+  const visibleList = useMemo(() => (user ? listTA : []), [user, listTA]);
+  const isLoading = Boolean(user) && loadingData;
+
   const sortedListTA = useMemo(() => {
-    const listCopy = [...listTA];
+    const listCopy = [...visibleList];
     if (filterType === "recent") {
-      listCopy.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      listCopy.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     } else if (filterType === "npm") {
       listCopy.sort((a, b) => a.npm.localeCompare(b.npm));
     }
     return listCopy;
-  }, [listTA, filterType]);
+  }, [visibleList, filterType]);
+
+  // Helper UI
+  const getInitials = (name: string) => {
+    return name ? name.charAt(0).toUpperCase() : "?";
+  };
+
+  const formatTime = (date: Date) => {
+    try {
+      return formatDistanceToNow(date, { addSuffix: true, locale: idLocale });
+    } catch {
+      return "baru saja";
+    }
+  };
+
+  const formatExactTime = (date: Date) => {
+    try {
+      return format(date, "d MMM yyyy, HH:mm", { locale: idLocale });
+    } catch {
+      return "";
+    }
+  };
 
   // Generate PDF Logic
   const generatePDF = () => {
-    const doc = new jsPDF("p", "mm", "a4");
+    const pdf = new jsPDF("p", "mm", "a4");
 
-    // Header PDF
-    doc.setFontSize(18);
-    doc.text("Laporan Daftar Tugas Akhir", 14, 22);
+    pdf.setFontSize(18);
+    pdf.text("Laporan Daftar Tugas Akhir", 14, 22);
 
-    doc.setFontSize(10);
-    doc.setTextColor(100);
-    const dateNow = new Date().toLocaleString("id-ID");
-    doc.text(`Dicetak pada: ${dateNow}`, 14, 30);
-    doc.text(`Total Data: ${sortedListTA.length} Mahasiswa`, 14, 35);
+    pdf.setFontSize(10);
+    pdf.setTextColor(100);
+    pdf.text(`Dicetak pada: ${new Date().toLocaleString("id-ID")}`, 14, 30);
+    pdf.text(`Total Data: ${sortedListTA.length} Mahasiswa`, 14, 35);
 
-    // Setup Kolom & Baris
-    const tableColumn = [
-      "No",
-      "NPM",
-      "Nama",
-      "Judul Tugas Akhir",
-      "Update Terakhir",
-    ];
-    const tableRows = [];
+    const tableRows: (string | number)[][] = sortedListTA.map((task, index) => [
+      index + 1,
+      task.npm,
+      task.nama,
+      task.judul,
+      formatExactTime(task.updatedAt),
+    ]);
 
-    // Loop data dari state yang sudah diurutkan (sortedListTA)
-    sortedListTA.forEach((task, index) => {
-      const taskData = [
-        index + 1,
-        task.npm,
-        task.nama,
-        task.judul,
-        formatExactTime(task.updatedAt),
-      ];
-      tableRows.push(taskData);
-    });
-
-    // Buat Tabel
-    doc.autoTable({
-      head: [tableColumn],
+    autoTable(pdf, {
+      head: [["No", "NPM", "Nama", "Judul Tugas Akhir", "Update Terakhir"]],
       body: tableRows,
       startY: 40,
       theme: "striped",
-      headStyles: { fillColor: [147, 51, 234] }, // Warna background ungu (purple-600)
+      headStyles: { fillColor: [147, 51, 234] },
       styles: { fontSize: 9 },
       columnStyles: {
-        0: { cellWidth: 10 }, // No
-        1: { cellWidth: 25 }, // NPM
-        2: { cellWidth: 40 }, // Nama
-        3: { cellWidth: "auto" }, // Judul
-        4: { cellWidth: 35 }, // Date
+        0: { cellWidth: 10 },
+        1: { cellWidth: 25 },
+        2: { cellWidth: 40 },
+        3: { cellWidth: "auto" },
+        4: { cellWidth: 35 },
       },
     });
 
-    // Download PDF
-    doc.save("Laporan_Tugas_Akhir.pdf");
+    pdf.save("Laporan_Tugas_Akhir.pdf");
   };
 
-  // Handlers (Submit & Edit)
-  const handleSubmit = async (e) => {
+  // Handlers
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!nama.trim() || !npm.trim() || !judul.trim()) {
       setErrorMsg("Semua field (Nama, NPM, Judul) harus diisi!");
       setTimeout(() => setErrorMsg(""), 3000);
       return;
     }
+
+    if (!user) return;
 
     setIsSubmitting(true);
     try {
@@ -261,7 +297,7 @@ export default function App() {
     }
   };
 
-  const handleStartEdit = (item) => {
+  const handleStartEdit = (item: TugasAkhirItem) => {
     setEditingId(item.id);
     setEditForm({ judul: item.judul, npm: item.npm, nama: item.nama });
   };
@@ -271,7 +307,7 @@ export default function App() {
     setEditForm({ judul: "", npm: "", nama: "" });
   };
 
-  const handleSaveEdit = async (id) => {
+  const handleSaveEdit = async (docId: string) => {
     if (
       !editForm.judul.trim() ||
       !editForm.npm.trim() ||
@@ -281,33 +317,15 @@ export default function App() {
       setTimeout(() => setErrorMsg(""), 3000);
       return;
     }
+
+    if (!user) return;
+
     try {
-      await taManager.update(id, editForm, user.uid);
+      await taManager.update(docId, editForm, user.uid);
       setEditingId(null);
     } catch (err) {
       console.error("Update error:", err);
       setErrorMsg("Gagal mengupdate data.");
-    }
-  };
-
-  // Helper UI
-  const getInitials = (name) => {
-    return name ? name.charAt(0).toUpperCase() : "?";
-  };
-
-  const formatTime = (date) => {
-    try {
-      return formatDistanceToNow(date, { addSuffix: true, locale: id });
-    } catch (e) {
-      return "baru saja";
-    }
-  };
-
-  const formatExactTime = (date) => {
-    try {
-      return format(date, "d MMM yyyy, HH:mm", { locale: id });
-    } catch (e) {
-      return "";
     }
   };
 
@@ -321,7 +339,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#F9F9FB] text-gray-800 font-sans flex">
-      {/* Sidebar (Mockup to match design context) */}
       <div className="hidden md:flex w-64 flex-col border-r border-gray-200 bg-white min-h-screen">
         <div className="p-4 border-b border-gray-100 flex items-center space-x-2">
           <LayoutDashboard size={20} className="text-gray-600" />
@@ -338,9 +355,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col max-w-5xl mx-auto w-full">
-        {/* Header (Top Nav) */}
         <header className="bg-white border-b border-gray-200 p-4 flex items-center text-sm text-gray-500">
           <span className="cursor-pointer hover:text-purple-600">
             Dashboard
@@ -356,7 +371,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Top Card: Title & Form */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 md:p-8 mb-10 relative overflow-hidden">
             <div className="absolute top-6 right-6">
               <span className="bg-purple-600 text-white text-xs font-bold px-3 py-1 rounded-full">
@@ -421,23 +435,20 @@ export default function App() {
             </form>
           </div>
 
-          {/* List Section */}
           <div className="mb-4">
             <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-6 gap-4">
               <h2 className="text-2xl font-bold text-gray-900">
                 Daftar Tugas Akhir
               </h2>
 
-              {/* Tombol Export PDF */}
               <button
                 onClick={generatePDF}
-                className="bg-gray-800 hidden hover:bg-gray-900 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 shadow-sm"
+                className="bg-gray-800 hover:bg-gray-900 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 shadow-sm"
               >
                 <Download size={16} /> Export ke PDF
               </button>
             </div>
 
-            {/* Tabs / Filters */}
             <div className="flex items-center justify-between border-b border-gray-200 mb-6 pb-0">
               <div className="flex space-x-8">
                 <button
@@ -473,8 +484,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Cards Stack */}
-          {loadingData ? (
+          {isLoading ? (
             <div className="text-center py-10 text-gray-500">
               Memuat data...
             </div>
@@ -500,7 +510,6 @@ export default function App() {
                     }`}
                   >
                     {isEditing ? (
-                      // Edit Mode View
                       <div className="space-y-4">
                         <div className="flex justify-between items-center mb-2">
                           <span className="text-xs font-bold bg-purple-100 text-purple-700 px-2 py-1 rounded-full uppercase tracking-wider">
@@ -570,16 +579,13 @@ export default function App() {
                         </div>
                       </div>
                     ) : (
-                      // Normal View
                       <div className="flex flex-col md:flex-row gap-4">
-                        {/* Avatar */}
                         <div className="flex-shrink-0">
                           <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center border border-gray-200 text-gray-600 font-bold text-sm">
                             {getInitials(item.nama)}
                           </div>
                         </div>
 
-                        {/* Content */}
                         <div className="flex-1">
                           <div className="flex justify-between items-start">
                             <div>
@@ -601,7 +607,6 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Action Buttons */}
                             {isOwner && (
                               <button
                                 onClick={() => handleStartEdit(item)}
