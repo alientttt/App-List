@@ -1,0 +1,18 @@
+.layout {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.layout__main {
+  min-width: 0;
+  padding: var(--space-page);
+  padding-bottom: calc(
+    var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px) +
+      var(--space-page)
+  );
+}
+
+.layout__content {
+  max-width: 64rem;
+  margin-inline: auto;
+}
